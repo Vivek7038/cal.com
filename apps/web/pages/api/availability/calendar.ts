@@ -4,12 +4,13 @@ import { z } from "zod";
 import { getCalendarCredentials, getConnectedCalendars } from "@calcom/core/CalendarManager";
 import { getServerSession } from "@calcom/features/auth/lib/getServerSession";
 import notEmpty from "@calcom/lib/notEmpty";
-import { revalidateCalendarCache } from "@calcom/lib/server/revalidateCalendarCache";
 import prisma from "@calcom/prisma";
+import { credentialForCalendarServiceSelect } from "@calcom/prisma/selects/credential";
 
 const selectedCalendarSelectSchema = z.object({
   integration: z.string(),
   externalId: z.string(),
+  credentialId: z.number().optional(),
 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -25,7 +26,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       id: session.user.id,
     },
     select: {
-      credentials: true,
+      credentials: {
+        select: credentialForCalendarServiceSelect,
+      },
       timeZone: true,
       id: true,
       selectedCalendars: true,
@@ -38,7 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { credentials, ...user } = userWithCredentials;
 
   if (req.method === "POST") {
-    const { integration, externalId } = selectedCalendarSelectSchema.parse(req.body);
+    const { integration, externalId, credentialId } = selectedCalendarSelectSchema.parse(req.body);
     await prisma.selectedCalendar.upsert({
       where: {
         userId_integration_externalId: {
@@ -51,6 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         userId: user.id,
         integration,
         externalId,
+        credentialId,
       },
       // already exists
       update: {},
@@ -71,10 +75,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     res.status(200).json({ message: "Calendar Selection Saved" });
-  }
-
-  if (["DELETE", "POST"].includes(req.method)) {
-    await revalidateCalendarCache(res.revalidate, `${session?.user?.username}`);
   }
 
   if (req.method === "GET") {

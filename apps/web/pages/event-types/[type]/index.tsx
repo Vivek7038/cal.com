@@ -1,12 +1,14 @@
 /* eslint-disable @typescript-eslint/no-empty-function */
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { isValidPhoneNumber } from "libphonenumber-js";
 import type { GetServerSidePropsContext } from "next";
-import { Trans } from "next-i18next";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { getEventLocationType } from "@calcom/app-store/locations";
 import { validateCustomEventName } from "@calcom/core/event";
 import type { EventLocationType } from "@calcom/core/location";
 import { getServerSession } from "@calcom/features/auth/lib/getServerSession";
@@ -29,26 +31,53 @@ import { eventTypeBookingFields } from "@calcom/prisma/zod-utils";
 import type { RouterOutputs } from "@calcom/trpc/react";
 import { trpc } from "@calcom/trpc/react";
 import type { IntervalLimit, RecurringEvent } from "@calcom/types/Calendar";
-import { ConfirmationDialogContent, Dialog, Form, showToast } from "@calcom/ui";
+import { Form, showToast } from "@calcom/ui";
 
 import { asStringOrThrow } from "@lib/asStringOrNull";
 import type { inferSSRProps } from "@lib/types/inferSSRProps";
 
 import PageWrapper from "@components/PageWrapper";
-// These can't really be moved into calcom/ui due to the fact they use infered getserverside props typings
-import { EventAdvancedTab } from "@components/eventtype/EventAdvancedTab";
-import { EventAppsTab } from "@components/eventtype/EventAppsTab";
 import type { AvailabilityOption } from "@components/eventtype/EventAvailabilityTab";
-import { EventAvailabilityTab } from "@components/eventtype/EventAvailabilityTab";
-import { EventLimitsTab } from "@components/eventtype/EventLimitsTab";
-import { EventRecurringTab } from "@components/eventtype/EventRecurringTab";
-import { EventSetupTab } from "@components/eventtype/EventSetupTab";
-import { EventTeamTab } from "@components/eventtype/EventTeamTab";
 import { EventTypeSingleLayout } from "@components/eventtype/EventTypeSingleLayout";
-import { EventWebhooksTab } from "@components/eventtype/EventWebhooksTab";
-import EventWorkflowsTab from "@components/eventtype/EventWorkfowsTab";
 
 import { ssrInit } from "@server/lib/ssr";
+
+// These can't really be moved into calcom/ui due to the fact they use infered getserverside props typings;
+const EventSetupTab = dynamic(() =>
+  import("@components/eventtype/EventSetupTab").then((mod) => mod.EventSetupTab)
+);
+
+const EventAvailabilityTab = dynamic(() =>
+  import("@components/eventtype/EventAvailabilityTab").then((mod) => mod.EventAvailabilityTab)
+);
+
+const EventTeamTab = dynamic(() =>
+  import("@components/eventtype/EventTeamTab").then((mod) => mod.EventTeamTab)
+);
+
+const EventLimitsTab = dynamic(() =>
+  import("@components/eventtype/EventLimitsTab").then((mod) => mod.EventLimitsTab)
+);
+
+const EventAdvancedTab = dynamic(() =>
+  import("@components/eventtype/EventAdvancedTab").then((mod) => mod.EventAdvancedTab)
+);
+
+const EventRecurringTab = dynamic(() =>
+  import("@components/eventtype/EventRecurringTab").then((mod) => mod.EventRecurringTab)
+);
+
+const EventAppsTab = dynamic(() =>
+  import("@components/eventtype/EventAppsTab").then((mod) => mod.EventAppsTab)
+);
+
+const EventWorkflowsTab = dynamic(() => import("@components/eventtype/EventWorkfowsTab"));
+
+const EventWebhooksTab = dynamic(() =>
+  import("@components/eventtype/EventWebhooksTab").then((mod) => mod.EventWebhooksTab)
+);
+
+const ManagedEventTypeDialog = dynamic(() => import("@components/eventtype/ManagedEventDialog"));
 
 export type FormValues = {
   title: string;
@@ -59,7 +88,9 @@ export type FormValues = {
   offsetStart: number;
   description: string;
   disableGuests: boolean;
+  lockTimeZoneToggleOnBookingPage: boolean;
   requiresConfirmation: boolean;
+  requiresBookerEmailVerification: boolean;
   recurringEvent: RecurringEvent | null;
   schedulingType: SchedulingType | null;
   hidden: boolean;
@@ -74,6 +105,8 @@ export type FormValues = {
     displayLocationPublicly?: boolean;
     phone?: string;
     hostDefault?: string;
+    credentialId?: number;
+    teamName?: string;
   }[];
   customInputs: CustomInputParsed[];
   schedule: number | null;
@@ -83,6 +116,7 @@ export type FormValues = {
   periodDates: { startDate: Date; endDate: Date };
   seatsPerTimeSlot: number | null;
   seatsShowAttendees: boolean | null;
+  seatsShowAvailabilityCount: boolean | null;
   seatsPerTimeSlotEnabled: boolean;
   minimumBookingNotice: number;
   minimumBookingNoticeInDurationType: number;
@@ -102,6 +136,7 @@ export type FormValues = {
   bookingFields: z.infer<typeof eventTypeBookingFields>;
   availability?: AvailabilityOption;
   bookerLayouts: BookerLayoutSettings;
+  multipleDurationEnabled: boolean;
 };
 
 export type CustomInputParsed = typeof customInputSchema._output;
@@ -134,8 +169,10 @@ const EventTypePage = (props: EventTypeSetupProps) => {
     data: { tabName },
   } = useTypedQuery(querySchema);
 
-  const { data: eventTypeApps } = trpc.viewer.apps.useQuery({
+  const { data: eventTypeApps } = trpc.viewer.integrations.useQuery({
     extendsFeature: "EventType",
+    teamId: props.eventType.team?.id || props.eventType.parent?.teamId,
+    onlyInstalled: true,
   });
 
   const { eventType, locationOptions, team, teamMembers, currentUserMembership, destinationCalendar } = props;
@@ -150,12 +187,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
           created: true,
         }))
       );
-      showToast(
-        t("event_type_updated_successfully", {
-          eventTypeTitle: eventType.title,
-        }),
-        "success"
-      );
+      showToast(t("event_type_updated_successfully", { eventTypeTitle: eventType.title }), "success");
     },
     async onSettled() {
       await utils.viewer.eventTypes.get.invalidate();
@@ -168,18 +200,18 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       }
 
       if (err.data?.code === "UNAUTHORIZED") {
-        message = `${err.data.code}: You are not able to update this event`;
+        message = `${err.data.code}: ${t("error_event_type_unauthorized_update")}`;
       }
 
       if (err.data?.code === "PARSE_ERROR" || err.data?.code === "BAD_REQUEST") {
-        message = `${err.data.code}: ${err.message}`;
+        message = `${err.data.code}: ${t(err.message)}`;
       }
 
-      if (message) {
-        showToast(message, "error");
-      } else {
-        showToast(err.message, "error");
+      if (err.data?.code === "INTERNAL_SERVER_ERROR") {
+        message = t("unexpected_error_try_again");
       }
+
+      showToast(message ? t(message) : t(err.message), "error");
     },
   });
 
@@ -221,10 +253,12 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       durationLimits: eventType.durationLimits || undefined,
       length: eventType.length,
       hidden: eventType.hidden,
+      hashedLink: eventType.hashedLink?.link || undefined,
       periodDates: {
         startDate: periodDates.startDate,
         endDate: periodDates.endDate,
       },
+      offsetStart: eventType.offsetStart,
       bookingFields: eventType.bookingFields,
       periodType: eventType.periodType,
       periodCountCalendarDays: eventType.periodCountCalendarDays ? "1" : "0",
@@ -244,6 +278,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
               .filter((slug) => slug !== eventType.slug) ?? [],
         },
       })),
+      seatsPerTimeSlotEnabled: eventType.seatsPerTimeSlot,
     };
   }, [eventType, periodDates, metadata]);
 
@@ -267,6 +302,69 @@ const EventTypePage = (props: EventTypeSetupProps) => {
           length: z.union([z.string().transform((val) => +val), z.number()]).optional(),
           offsetStart: z.union([z.string().transform((val) => +val), z.number()]).optional(),
           bookingFields: eventTypeBookingFields,
+          locations: z
+            .array(
+              z
+                .object({
+                  type: z.string(),
+                  address: z.string().optional(),
+                  link: z.string().url().optional(),
+                  phone: z
+                    .string()
+                    .refine((val) => isValidPhoneNumber(val))
+                    .optional(),
+                  hostPhoneNumber: z
+                    .string()
+                    .refine((val) => isValidPhoneNumber(val))
+                    .optional(),
+                  displayLocationPublicly: z.boolean().optional(),
+                  credentialId: z.number().optional(),
+                  teamName: z.string().optional(),
+                })
+                .passthrough()
+                .superRefine((val, ctx) => {
+                  if (val?.link) {
+                    const link = val.link;
+                    const eventLocationType = getEventLocationType(val.type);
+                    if (
+                      eventLocationType &&
+                      !eventLocationType.default &&
+                      eventLocationType.linkType === "static" &&
+                      eventLocationType.urlRegExp
+                    ) {
+                      const valid = z
+                        .string()
+                        .regex(new RegExp(eventLocationType.urlRegExp))
+                        .safeParse(link).success;
+
+                      if (!valid) {
+                        const sampleUrl = eventLocationType.organizerInputPlaceholder;
+                        ctx.addIssue({
+                          code: z.ZodIssueCode.custom,
+                          path: [eventLocationType?.defaultValueVariable ?? "link"],
+                          message: t("invalid_url_error_message", {
+                            label: eventLocationType.label,
+                            sampleUrl: sampleUrl ?? "https://cal.com",
+                          }),
+                        });
+                      }
+                      return;
+                    }
+
+                    const valid = z.string().url().optional().safeParse(link).success;
+
+                    if (!valid) {
+                      ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        path: [eventLocationType?.defaultValueVariable ?? "link"],
+                        message: `Invalid URL`,
+                      });
+                    }
+                  }
+                  return;
+                })
+            )
+            .optional(),
         })
         // TODO: Add schema for other fields later.
         .passthrough()
@@ -283,12 +381,12 @@ const EventTypePage = (props: EventTypeSetupProps) => {
 
   const appsMetadata = formMethods.getValues("metadata")?.apps;
   const availability = formMethods.watch("availability");
-  const numberOfInstalledApps = eventTypeApps?.filter((app) => app.isInstalled).length || 0;
   let numberOfActiveApps = 0;
 
   if (appsMetadata) {
     numberOfActiveApps = Object.entries(appsMetadata).filter(
-      ([appId, appData]) => eventTypeApps?.find((app) => app.slug === appId)?.isInstalled && appData.enabled
+      ([appId, appData]) =>
+        eventTypeApps?.items.find((app) => app.slug === appId)?.isInstalled && appData.enabled
     ).length;
   }
 
@@ -329,6 +427,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       afterBufferTime,
       seatsPerTimeSlot,
       seatsShowAttendees,
+      seatsShowAvailabilityCount,
       bookingLimits,
       durationLimits,
       recurringEvent,
@@ -341,9 +440,15 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       seatsPerTimeSlotEnabled,
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       minimumBookingNoticeInDurationType,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       bookerLayouts,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      multipleDurationEnabled,
+      length,
       ...input
     } = values;
+
+    if (!Number(length)) throw new Error(t("event_setup_length_error"));
 
     if (bookingLimits) {
       const isValid = validateIntervalLimitOrder(bookingLimits);
@@ -362,7 +467,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       if (metadata?.multipleDuration.length < 1) {
         throw new Error(t("event_setup_multiple_duration_error"));
       } else {
-        if (!input.length && !metadata?.multipleDuration?.includes(input.length)) {
+        if (!length && !metadata?.multipleDuration?.includes(length)) {
           throw new Error(t("event_setup_multiple_duration_default_error"));
         }
       }
@@ -372,9 +477,11 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       throw new Error(t("seats_and_no_show_fee_error"));
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { availability, ...rest } = input;
     updateMutation.mutate({
       ...rest,
+      length,
       locations,
       recurringEvent,
       periodStartDate: periodDates.startDate,
@@ -387,6 +494,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
       durationLimits,
       seatsPerTimeSlot,
       seatsShowAttendees,
+      seatsShowAvailabilityCount,
       metadata,
       customInputs,
       children,
@@ -400,15 +508,17 @@ const EventTypePage = (props: EventTypeSetupProps) => {
     <>
       <EventTypeSingleLayout
         enabledAppsNumber={numberOfActiveApps}
-        installedAppsNumber={numberOfInstalledApps}
+        installedAppsNumber={eventTypeApps?.items.length || 0}
         enabledWorkflowsNumber={eventType.workflows.length}
         eventType={eventType}
         team={team}
         availability={availability}
         isUpdateMutationLoading={updateMutation.isLoading}
         formMethods={formMethods}
-        disableBorder={tabName === "apps" || tabName === "workflows" || tabName === "webhooks"}
-        currentUserMembership={currentUserMembership}>
+        // disableBorder={tabName === "apps" || tabName === "workflows" || tabName === "webhooks"}
+        disableBorder={true}
+        currentUserMembership={currentUserMembership}
+        isUserOrganizationAdmin={props.isUserOrganizationAdmin}>
         <Form
           form={formMethods}
           id="event-type-form"
@@ -420,6 +530,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
               afterBufferTime,
               seatsPerTimeSlot,
               seatsShowAttendees,
+              seatsShowAvailabilityCount,
               bookingLimits,
               durationLimits,
               recurringEvent,
@@ -429,8 +540,13 @@ const EventTypePage = (props: EventTypeSetupProps) => {
               // We don't need to send send these values to the backend
               // eslint-disable-next-line @typescript-eslint/no-unused-vars
               seatsPerTimeSlotEnabled,
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              multipleDurationEnabled,
+              length,
               ...input
             } = values;
+
+            if (!Number(length)) throw new Error(t("event_setup_length_error"));
 
             if (bookingLimits) {
               const isValid = validateIntervalLimitOrder(bookingLimits);
@@ -449,14 +565,16 @@ const EventTypePage = (props: EventTypeSetupProps) => {
               if (metadata?.multipleDuration.length < 1) {
                 throw new Error(t("event_setup_multiple_duration_error"));
               } else {
-                if (!input.length && !metadata?.multipleDuration?.includes(input.length)) {
+                if (!length && !metadata?.multipleDuration?.includes(length)) {
                   throw new Error(t("event_setup_multiple_duration_default_error"));
                 }
               }
             }
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { availability, ...rest } = input;
             updateMutation.mutate({
               ...rest,
+              length,
               locations,
               recurringEvent,
               periodStartDate: periodDates.startDate,
@@ -469,6 +587,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
               durationLimits,
               seatsPerTimeSlot,
               seatsShowAttendees,
+              seatsShowAvailabilityCount,
               metadata,
               customInputs,
             });
@@ -476,46 +595,23 @@ const EventTypePage = (props: EventTypeSetupProps) => {
           <div ref={animationParentRef}>{tabMap[tabName]}</div>
         </Form>
       </EventTypeSingleLayout>
-      <Dialog
-        open={slugExistsChildrenDialogOpen.length > 0}
-        onOpenChange={() => {
-          setSlugExistsChildrenDialogOpen([]);
-        }}>
-        <ConfirmationDialogContent
+
+      {slugExistsChildrenDialogOpen.length ? (
+        <ManagedEventTypeDialog
+          slugExistsChildrenDialogOpen={slugExistsChildrenDialogOpen}
           isLoading={formMethods.formState.isSubmitting}
-          variety="warning"
-          title={t("managed_event_dialog_title", {
-            slug,
-            count: slugExistsChildrenDialogOpen.length,
-          })}
-          confirmBtnText={t("managed_event_dialog_confirm_button", {
-            count: slugExistsChildrenDialogOpen.length,
-          })}
-          cancelBtnText={t("go_back")}
+          onOpenChange={() => {
+            setSlugExistsChildrenDialogOpen([]);
+          }}
+          slug={slug}
           onConfirm={(e: { preventDefault: () => void }) => {
             e.preventDefault();
             handleSubmit(formMethods.getValues());
             telemetry.event(telemetryEventTypes.slugReplacementAction);
             setSlugExistsChildrenDialogOpen([]);
-          }}>
-          <p className="mt-5">
-            <Trans
-              i18nKey="managed_event_dialog_information"
-              values={{
-                names: `${slugExistsChildrenDialogOpen
-                  .map((ch) => ch.owner.name)
-                  .slice(0, -1)
-                  .join(", ")} ${
-                  slugExistsChildrenDialogOpen.length > 1 ? t("and") : ""
-                } ${slugExistsChildrenDialogOpen.map((ch) => ch.owner.name).slice(-1)}`,
-                slug,
-              }}
-              count={slugExistsChildrenDialogOpen.length}
-            />
-          </p>{" "}
-          <p className="mt-5">{t("managed_event_dialog_clarification")}</p>
-        </ConfirmationDialogContent>
-      </Dialog>
+          }}
+        />
+      ) : null}
     </>
   );
 };
@@ -523,6 +619,7 @@ const EventTypePage = (props: EventTypeSetupProps) => {
 const EventTypePageWrapper = (props: inferSSRProps<typeof getServerSideProps>) => {
   const { data } = trpc.viewer.eventTypes.get.useQuery({ id: props.type });
 
+  if (!data) return null;
   return <EventTypePage {...(data as EventTypeSetupProps)} />;
 };
 

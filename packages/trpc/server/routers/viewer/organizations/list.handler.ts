@@ -1,4 +1,5 @@
-import type { PrismaClient } from "@calcom/prisma/client";
+import type { PrismaClient } from "@calcom/prisma";
+import { teamMetadataSchema } from "@calcom/prisma/zod-utils";
 import type { TrpcSessionUser } from "@calcom/trpc/server/trpc";
 
 import { TRPCError } from "@trpc/server";
@@ -28,11 +29,23 @@ export const listHandler = async ({ ctx }: ListHandlerInput) => {
     },
   });
 
+  if (!membership) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "You do not have a membership to your organization",
+    });
+  }
+
+  const metadata = teamMetadataSchema.parse(membership?.team.metadata);
+
   return {
     user: {
       role: membership?.role,
       accepted: membership?.accepted,
     },
     ...membership?.team,
+    metadata,
   };
 };
+
+export default listHandler;

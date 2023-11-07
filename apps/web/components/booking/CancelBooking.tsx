@@ -1,4 +1,4 @@
-import { useRouter } from "next/router";
+import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { useLocale } from "@calcom/lib/hooks/useLocale";
@@ -41,6 +41,7 @@ export default function CancelBooking(props: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   return (
     <>
       {error && (
@@ -64,7 +65,7 @@ export default function CancelBooking(props: Props) {
             placeholder={t("cancellation_reason_placeholder")}
             value={cancellationReason}
             onChange={(e) => setCancellationReason(e.target.value)}
-            className="mt-2 mb-4 w-full "
+            className="mb-4 mt-2 w-full "
             rows={3}
           />
           <div className="flex flex-col-reverse rtl:space-x-reverse ">
@@ -97,7 +98,8 @@ export default function CancelBooking(props: Props) {
                   });
 
                   if (res.status >= 200 && res.status < 300) {
-                    await router.replace(router.asPath);
+                    // tested by apps/web/playwright/booking-pages.e2e.ts
+                    router.refresh();
                   } else {
                     setLoading(false);
                     setError(

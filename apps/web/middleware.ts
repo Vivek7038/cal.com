@@ -1,35 +1,13 @@
 import { get } from "@vercel/edge-config";
 import { collectEvents } from "next-collect/server";
 import type { NextMiddleware } from "next/server";
-import { NextResponse, userAgent } from "next/server";
+import { NextResponse } from "next/server";
 
-import { orgDomainConfig } from "@calcom/features/ee/organizations/lib/orgDomains";
-import { CONSOLE_URL, WEBAPP_URL, WEBSITE_URL } from "@calcom/lib/constants";
-import { isIpInBanlist } from "@calcom/lib/getIP";
 import { extendEventData, nextCollectBasicSettings } from "@calcom/lib/telemetry";
 
 const middleware: NextMiddleware = async (req) => {
   const url = req.nextUrl;
   const requestHeaders = new Headers(req.headers);
-  const { currentOrgDomain, isValidOrgDomain } = orgDomainConfig(req.headers.get("host") ?? "");
-  /**
-   * We are using env variable to toggle new-booker because using flags would be an unnecessary delay for booking pages
-   * Also, we can't easily identify the booker page requests here(to just fetch the flags for those requests)
-   */
-
-  // Make sure we are in the presence of an organization
-  if (isValidOrgDomain && url.pathname === "/") {
-    // In the presence of an organization, cover its profile page at "/"
-    // rewrites for org profile page using team profile page
-    url.pathname = `/org/${currentOrgDomain}`;
-    return NextResponse.rewrite(url);
-  }
-
-  if (isIpInBanlist(req) && url.pathname !== "/api/nope") {
-    // DDOS Prevention: Immediately end request with no response - Avoids a redirect as well initiated by NextAuth on invalid callback
-    req.nextUrl.pathname = "/api/nope";
-    return NextResponse.redirect(req.nextUrl);
-  }
 
   if (!url.pathname.startsWith("/api")) {
     //
@@ -53,54 +31,18 @@ const middleware: NextMiddleware = async (req) => {
     }
   }
 
-  if (["/api/collect-events", "/api/auth"].some((p) => url.pathname.startsWith(p))) {
-    const callbackUrl = url.searchParams.get("callbackUrl");
-    const { isBot } = userAgent(req);
-
-    if (
-      isBot ||
-      (callbackUrl && ![CONSOLE_URL, WEBAPP_URL, WEBSITE_URL].some((u) => callbackUrl.startsWith(u))) ||
-      isIpInBanlist(req)
-    ) {
-      // DDOS Prevention: Immediately end request with no response - Avoids a redirect as well initiated by NextAuth on invalid callback
-      req.nextUrl.pathname = "/api/nope";
-      return NextResponse.redirect(req.nextUrl);
-    }
-  }
-
-  // Don't 404 old routing_forms links
-  if (url.pathname.startsWith("/apps/routing_forms")) {
-    url.pathname = url.pathname.replace("/apps/routing_forms", "/apps/routing-forms");
-    return NextResponse.rewrite(url);
+  const res = routingForms.handle(url);
+  if (res) {
+    return res;
   }
 
   if (url.pathname.startsWith("/api/trpc/")) {
     requestHeaders.set("x-cal-timezone", req.headers.get("x-vercel-ip-timezone") ?? "");
   }
 
-  if (url.pathname.startsWith("/auth/login")) {
+  if (url.pathname.startsWith("/auth/login") || url.pathname.startsWith("/login")) {
     // Use this header to actually enforce CSP, otherwise it is running in Report Only mode on all pages.
     requestHeaders.set("x-csp-enforce", "true");
-  }
-
-  if (isValidOrgDomain) {
-    // Match /:slug to determine if it corresponds to org subteam slug or org user slug
-    const slugs = /^\/([^/]+)(\/[^/]+)?$/.exec(url.pathname);
-    // In the presence of an organization, if not team profile, a user or team is being accessed
-    if (slugs) {
-      const [_, teamName, eventType] = slugs;
-      // Fetch the corresponding subteams for the entered organization
-      const getSubteams = await fetch(`${WEBAPP_URL}/api/organizations/${currentOrgDomain}/subteams`);
-      if (getSubteams.ok) {
-        const data = await getSubteams.json();
-        // Treat entered slug as a team if found in the subteams fetched
-        if (data.slugs.includes(teamName)) {
-          // Rewriting towards /team/:slug to bring up the team profile within the org
-          url.pathname = `/team/${teamName}${eventType ?? ""}`;
-          return NextResponse.rewrite(url);
-        }
-      }
-    }
   }
 
   return NextResponse.next({
@@ -110,15 +52,28 @@ const middleware: NextMiddleware = async (req) => {
   });
 };
 
+const routingForms = {
+  handle: (url: URL) => {
+    // Don't 404 old routing_forms links
+    if (url.pathname.startsWith("/apps/routing_forms")) {
+      url.pathname = url.pathname.replace(/^\/apps\/routing_forms($|\/)/, "/apps/routing-forms/");
+      return NextResponse.rewrite(url);
+    }
+  },
+};
+
 export const config = {
+  // Next.js Doesn't support spread operator in config matcher, so, we must list all paths explicitly here.
+  // https://github.com/vercel/next.js/discussions/42458
   matcher: [
-    "/:path*",
-    "/api/collect-events/:path*",
-    "/api/auth/:path*",
-    "/apps/routing_forms/:path*",
     "/:path*/embed",
     "/api/trpc/:path*",
+    "/login",
     "/auth/login",
+    /**
+     * Paths required by routingForms.handle
+     */
+    "/apps/routing_forms/:path*",
   ],
 };
 

@@ -46,7 +46,7 @@ export default function JoinCall(props: JoinCallPageProps) {
           baseText: "#FFF",
           border: "#292929",
           mainAreaBg: "#111111",
-          mainAreaBgAccent: "#111111",
+          mainAreaBgAccent: "#1A1A1A",
           mainAreaText: "#FFF",
           supportiveText: "#FFF",
         },
@@ -95,12 +95,12 @@ export default function JoinCall(props: JoinCallPageProps) {
         <meta property="og:image" content={SEO_IMG_OGIMG_VIDEO} />
         <meta property="og:type" content="website" />
         <meta property="og:url" content={`${WEBSITE_URL}/video`} />
-        <meta property="og:title" content={APP_NAME + " Video"} />
+        <meta property="og:title" content={`${APP_NAME} Video`} />
         <meta property="og:description" content={t("quick_video_meeting")} />
         <meta property="twitter:image" content={SEO_IMG_OGIMG_VIDEO} />
         <meta property="twitter:card" content="summary_large_image" />
         <meta property="twitter:url" content={`${WEBSITE_URL}/video`} />
-        <meta property="twitter:title" content={APP_NAME + " Video"} />
+        <meta property="twitter:title" content={`${APP_NAME} Video`} />
         <meta property="twitter:description" content={t("quick_video_meeting")} />
       </Head>
       <div style={{ zIndex: 2, position: "relative" }}>
@@ -205,7 +205,7 @@ export function VideoMeetingInfo(props: VideoMeetingInfo) {
     <>
       <aside
         className={classNames(
-          "no-scrollbar fixed top-0 left-0 z-30 flex h-full w-64 transform justify-between overflow-x-hidden overflow-y-scroll transition-all duration-300 ease-in-out",
+          "no-scrollbar fixed left-0 top-0 z-30 flex h-full w-64 transform justify-between overflow-x-hidden overflow-y-scroll transition-all duration-300 ease-in-out",
           open ? "translate-x-0" : "-translate-x-[232px]"
         )}>
         <main className="prose-sm prose max-w-64 prose-a:text-white prose-h3:text-white prose-h3:font-cal scroll-bar scrollbar-track-w-20 w-full overflow-scroll overflow-x-hidden border-r border-gray-300/20 bg-black/80 p-4 text-white shadow-sm backdrop-blur-lg">

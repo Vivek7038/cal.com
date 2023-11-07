@@ -1,17 +1,19 @@
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/router";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { useLocale } from "@calcom/lib/hooks/useLocale";
+import { useParamsWithFallback } from "@calcom/lib/hooks/useParamsWithFallback";
 import { MembershipRole } from "@calcom/prisma/enums";
-import { trpc } from "@calcom/trpc/react";
 import type { RouterOutputs } from "@calcom/trpc/react";
-import { Button, Meta, TextField, showToast } from "@calcom/ui";
+import { trpc } from "@calcom/trpc/react";
+import { Button, Meta, showToast, TextField } from "@calcom/ui";
 import { Plus } from "@calcom/ui/components/icon";
 
 import { getLayout } from "../../../settings/layouts/SettingsLayout";
 import DisableTeamImpersonation from "../components/DisableTeamImpersonation";
 import InviteLinkSettingsModal from "../components/InviteLinkSettingsModal";
+import MakeTeamPrivateSwitch from "../components/MakeTeamPrivateSwitch";
 import MemberInvitationModal from "../components/MemberInvitationModal";
 import MemberListItem from "../components/MemberListItem";
 import TeamInviteList from "../components/TeamInviteList";
@@ -20,13 +22,14 @@ type Team = RouterOutputs["viewer"]["teams"]["get"];
 
 interface MembersListProps {
   team: Team | undefined;
+  isOrgAdminOrOwner: boolean | undefined;
 }
 
 const checkIfExist = (comp: string, query: string) =>
   comp.toLowerCase().replace(/\s+/g, "").includes(query.toLowerCase().replace(/\s+/g, ""));
 
 function MembersList(props: MembersListProps) {
-  const { team } = props;
+  const { team, isOrgAdminOrOwner } = props;
   const { t } = useLocale();
   const [query, setQuery] = useState<string>("");
 
@@ -54,7 +57,14 @@ function MembersList(props: MembersListProps) {
       {membersList?.length && team ? (
         <ul className="divide-subtle border-subtle divide-y rounded-md border ">
           {membersList.map((member) => {
-            return <MemberListItem key={member.id} team={team} member={member} />;
+            return (
+              <MemberListItem
+                key={member.id}
+                team={team}
+                member={member}
+                isOrgAdminOrOwner={isOrgAdminOrOwner}
+              />
+            );
           })}
         </ul>
       ) : null}
@@ -63,25 +73,46 @@ function MembersList(props: MembersListProps) {
 }
 
 const MembersView = () => {
+  const searchParams = useSearchParams();
   const { t, i18n } = useLocale();
 
   const router = useRouter();
   const session = useSession();
-  const utils = trpc.useContext();
-  const teamId = Number(router.query.id);
 
-  const showDialog = router.query.inviteModal === "true";
+  const utils = trpc.useContext();
+  const params = useParamsWithFallback();
+
+  const teamId = Number(params.id);
+
+  const showDialog = searchParams?.get("inviteModal") === "true";
   const [showMemberInvitationModal, setShowMemberInvitationModal] = useState(showDialog);
   const [showInviteLinkSettingsModal, setInviteLinkSettingsModal] = useState(false);
+  const { data: currentOrg } = trpc.viewer.organizations.listCurrent.useQuery(undefined, {
+    enabled: !!session.data?.user?.org,
+  });
 
-  const { data: team, isLoading } = trpc.viewer.teams.get.useQuery(
+  const { data: orgMembersNotInThisTeam, isLoading: isOrgListLoading } =
+    trpc.viewer.organizations.getMembers.useQuery(
+      {
+        teamIdToExclude: teamId,
+        distinctUser: true,
+      },
+      {
+        enabled: searchParams !== null && !!teamId,
+      }
+    );
+
+  const { data: team, isLoading: isTeamsLoading } = trpc.viewer.teams.get.useQuery(
     { teamId },
     {
+      enabled: !!teamId,
       onError: () => {
         router.push("/settings");
       },
     }
   );
+
+  const isLoading = isOrgListLoading || isTeamsLoading;
 
   const inviteMemberMutation = trpc.viewer.teams.inviteMember.useMutation();
 
@@ -90,13 +121,17 @@ const MembersView = () => {
   const isAdmin =
     team && (team.membership.role === MembershipRole.OWNER || team.membership.role === MembershipRole.ADMIN);
 
+  const isOrgAdminOrOwner =
+    currentOrg &&
+    (currentOrg.user.role === MembershipRole.OWNER || currentOrg.user.role === MembershipRole.ADMIN);
+
   return (
     <>
       <Meta
         title={t("team_members")}
         description={t("members_team_description")}
         CTA={
-          isAdmin ? (
+          isAdmin || isOrgAdminOrOwner ? (
             <Button
               type="button"
               color="primary"
@@ -122,7 +157,6 @@ const MembersView = () => {
                       {
                         id: team.id,
                         accepted: team.membership.accepted || false,
-                        logo: team.logo,
                         name: team.name,
                         slug: team.slug,
                         role: team.membership.role,
@@ -132,8 +166,13 @@ const MembersView = () => {
                 )}
               </>
             )}
-            <MembersList team={team} />
-            <hr className="border-subtle my-8" />
+
+            {((team?.isPrivate && isAdmin) || !team?.isPrivate || isOrgAdminOrOwner) && (
+              <>
+                <MembersList team={team} isOrgAdminOrOwner={isOrgAdminOrOwner} />
+                <hr className="border-subtle my-8" />
+              </>
+            )}
 
             {team && session.data && (
               <DisableTeamImpersonation
@@ -142,11 +181,19 @@ const MembersView = () => {
                 disabled={isInviteOpen}
               />
             )}
-            <hr className="border-subtle my-8" />
+
+            {team && (isAdmin || isOrgAdminOrOwner) && (
+              <>
+                <hr className="border-subtle my-8" />
+                <MakeTeamPrivateSwitch teamId={team.id} isPrivate={team.isPrivate} disabled={isInviteOpen} />
+              </>
+            )}
           </div>
           {showMemberInvitationModal && team && (
             <MemberInvitationModal
+              isLoading={inviteMemberMutation.isLoading}
               isOpen={showMemberInvitationModal}
+              orgMembers={orgMembersNotInThisTeam}
               members={team.members}
               teamId={team.id}
               token={team.inviteToken?.token}
@@ -158,29 +205,27 @@ const MembersView = () => {
                     language: i18n.language,
                     role: values.role,
                     usernameOrEmail: values.emailOrUsername,
-                    sendEmailInvitation: values.sendInviteEmail,
                   },
                   {
                     onSuccess: async (data) => {
                       await utils.viewer.teams.get.invalidate();
                       setShowMemberInvitationModal(false);
-                      if (data.sendEmailInvitation) {
-                        if (Array.isArray(data.usernameOrEmail)) {
-                          showToast(
-                            t("email_invite_team_bulk", {
-                              userCount: data.usernameOrEmail.length,
-                            }),
-                            "success"
-                          );
-                          resetFields();
-                        } else {
-                          showToast(
-                            t("email_invite_team", {
-                              email: data.usernameOrEmail,
-                            }),
-                            "success"
-                          );
-                        }
+
+                      if (Array.isArray(data.usernameOrEmail)) {
+                        showToast(
+                          t("email_invite_team_bulk", {
+                            userCount: data.usernameOrEmail.length,
+                          }),
+                          "success"
+                        );
+                        resetFields();
+                      } else {
+                        showToast(
+                          t("email_invite_team", {
+                            email: data.usernameOrEmail,
+                          }),
+                          "success"
+                        );
                       }
                     },
                     onError: (error) => {

@@ -1,12 +1,14 @@
 import { Webhook as TbWebhook } from "lucide-react";
 import type { TFunction } from "next-i18next";
 import { Trans } from "next-i18next";
-import { useRouter } from "next/router";
+import { useRouter } from "next/navigation";
 import type { EventTypeSetupProps, FormValues } from "pages/event-types/[type]";
 import { useMemo, useState, Suspense } from "react";
 import type { UseFormReturn } from "react-hook-form";
 
 import useLockedFieldsManager from "@calcom/features/ee/managed-event-types/hooks/useLockedFieldsManager";
+import { useOrgBranding } from "@calcom/features/ee/organizations/context/provider";
+import { EventTypeEmbedButton, EventTypeEmbedDialog } from "@calcom/features/embed/EventTypeEmbed";
 import Shell from "@calcom/features/shell/Shell";
 import { classNames } from "@calcom/lib";
 import { CAL_URL } from "@calcom/lib/constants";
@@ -50,7 +52,6 @@ import {
   Loader,
 } from "@calcom/ui/components/icon";
 
-import { EmbedButton, EmbedDialog } from "@components/Embed";
 import type { AvailabilityOption } from "@components/eventtype/EventAvailabilityTab";
 
 type Props = {
@@ -65,6 +66,7 @@ type Props = {
   formMethods: UseFormReturn<FormValues>;
   isUpdateMutationLoading?: boolean;
   availability?: AvailabilityOption;
+  isUserOrganizationAdmin: boolean;
 };
 
 function getNavigation(props: {
@@ -132,6 +134,7 @@ function EventTypeSingleLayout({
   isUpdateMutationLoading,
   formMethods,
   availability,
+  isUserOrganizationAdmin,
 }: Props) {
   const utils = trpc.useContext();
   const { t } = useLocale();
@@ -141,13 +144,14 @@ function EventTypeSingleLayout({
   const hasPermsToDelete =
     currentUserMembership?.role !== "MEMBER" ||
     !currentUserMembership ||
-    eventType.schedulingType === SchedulingType.MANAGED;
+    eventType.schedulingType === SchedulingType.MANAGED ||
+    isUserOrganizationAdmin;
 
   const deleteMutation = trpc.viewer.eventTypes.delete.useMutation({
     onSuccess: async () => {
       await utils.viewer.eventTypes.invalidate();
       showToast(t("event_type_deleted_successfully"), "success");
-      await router.push("/event-types");
+      router.push("/event-types");
       setDeleteDialogOpen(false);
     },
     onError: (err) => {
@@ -208,10 +212,8 @@ function EventTypeSingleLayout({
         }`,
       });
     }
-    if (isManagedEventType || isChildrenManagedEventType) {
-      // Removing apps and workflows for manageg event types by admins v1
-      navigation.splice(-2, 1);
-    } else {
+    const showWebhooks = !(isManagedEventType || isChildrenManagedEventType);
+    if (showWebhooks) {
       navigation.push({
         name: "webhooks",
         href: `/event-types/${eventType.id}?tabName=webhooks`,
@@ -233,9 +235,11 @@ function EventTypeSingleLayout({
     formMethods,
   ]);
 
-  const permalink = `${CAL_URL}/${team ? `team/${team.slug}` : eventType.users[0].username}/${
-    eventType.slug
-  }`;
+  const orgBranding = useOrgBranding();
+  const isOrgEvent = orgBranding?.fullDomain;
+  const permalink = `${orgBranding?.fullDomain ?? CAL_URL}/${
+    team ? `${!isOrgEvent ? "team/" : ""}${team.slug}` : eventType.users[0].username
+  }/${eventType.slug}`;
 
   const embedLink = `${team ? `team/${team.slug}` : eventType.users[0].username}/${eventType.slug}`;
   const isManagedEvent = eventType.schedulingType === SchedulingType.MANAGED ? "_managed" : "";
@@ -243,7 +247,7 @@ function EventTypeSingleLayout({
   return (
     <Shell
       backPath="/event-types"
-      title={eventType.title + " | " + t("event_type")}
+      title={`${eventType.title} | ${t("event_type")}`}
       heading={eventType.title}
       CTA={
         <div className="flex items-center justify-end">
@@ -264,9 +268,11 @@ function EventTypeSingleLayout({
                   </Skeleton>
                 )}
                 <Tooltip
+                  sideOffset={4}
                   content={
                     formMethods.watch("hidden") ? t("show_eventtype_on_profile") : t("hide_from_profile")
-                  }>
+                  }
+                  side="bottom">
                   <div className="self-center rounded-md p-2">
                     <Switch
                       id="hiddenSwitch"
@@ -287,7 +293,7 @@ function EventTypeSingleLayout({
             {!isManagedEventType && (
               <>
                 {/* We have to warp this in tooltip as it has a href which disabels the tooltip on buttons */}
-                <Tooltip content={t("preview")}>
+                <Tooltip content={t("preview")} side="bottom" sideOffset={4}>
                   <Button
                     color="secondary"
                     data-testid="preview-button"
@@ -304,17 +310,22 @@ function EventTypeSingleLayout({
                   variant="icon"
                   StartIcon={LinkIcon}
                   tooltip={t("copy_link")}
+                  tooltipSide="bottom"
+                  tooltipOffset={4}
                   onClick={() => {
                     navigator.clipboard.writeText(permalink);
                     showToast("Link copied!", "success");
                   }}
                 />
-                <EmbedButton
+                <EventTypeEmbedButton
                   embedUrl={encodeURIComponent(embedLink)}
                   StartIcon={Code}
                   color="secondary"
                   variant="icon"
                   tooltip={t("embed")}
+                  tooltipSide="bottom"
+                  tooltipOffset={4}
+                  eventId={eventType.id}
                 />
               </>
             )}
@@ -324,6 +335,8 @@ function EventTypeSingleLayout({
                 variant="icon"
                 StartIcon={Trash}
                 tooltip={t("delete")}
+                tooltipSide="bottom"
+                tooltipOffset={4}
                 disabled={!hasPermsToDelete}
                 onClick={() => setDeleteDialogOpen(true)}
               />
@@ -369,7 +382,7 @@ function EventTypeSingleLayout({
                 </DropdownItem>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <div className="hover:bg-subtle flex h-9 cursor-pointer flex-row items-center justify-between py-2 px-4">
+              <div className="hover:bg-subtle flex h-9 cursor-pointer flex-row items-center justify-between px-4 py-2">
                 <Skeleton
                   as={Label}
                   htmlFor="hiddenSwitch"
@@ -404,13 +417,13 @@ function EventTypeSingleLayout({
               className="primary-navigation"
               tabs={EventTypeTabs}
               sticky
-              linkProps={{ shallow: true }}
+              linkShallow
               itemClassname="items-start"
               iconClassName="md:mt-px"
             />
           </div>
           <div className="p-2 md:mx-0 md:p-0 xl:hidden">
-            <HorizontalTabs tabs={EventTypeTabs} linkProps={{ shallow: true }} />
+            <HorizontalTabs tabs={EventTypeTabs} linkShallow />
           </div>
           <div className="w-full ltr:mr-2 rtl:ml-2">
             <div
@@ -448,7 +461,7 @@ function EventTypeSingleLayout({
           </p>
         </ConfirmationDialogContent>
       </Dialog>
-      <EmbedDialog />
+      <EventTypeEmbedDialog />
     </Shell>
   );
 }

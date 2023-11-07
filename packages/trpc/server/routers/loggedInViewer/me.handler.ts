@@ -1,3 +1,4 @@
+import { getUserAvatarUrl } from "@calcom/lib/getAvatarUrl";
 import type { TrpcSessionUser } from "@calcom/trpc/server/trpc";
 
 type MeOptions = {
@@ -23,7 +24,7 @@ export const meHandler = async ({ ctx }: MeOptions) => {
     locale: user.locale,
     timeFormat: user.timeFormat,
     timeZone: user.timeZone,
-    avatar: user.avatar,
+    avatar: getUserAvatarUrl(user),
     createdDate: user.createdDate,
     trialEndsAt: user.trialEndsAt,
     defaultScheduleId: user.defaultScheduleId,
@@ -41,6 +42,8 @@ export const meHandler = async ({ ctx }: MeOptions) => {
     metadata: user.metadata,
     defaultBookerLayouts: user.defaultBookerLayouts,
     allowDynamicBooking: user.allowDynamicBooking,
+    allowSEOIndexing: user.allowSEOIndexing,
+    receiveMonthlyDigestEmail: user.receiveMonthlyDigestEmail,
     organizationId: user.organizationId,
     organization: user.organization,
   };

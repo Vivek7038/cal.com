@@ -1,13 +1,12 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { isValidPhoneNumber } from "libphonenumber-js";
-import { useRouter } from "next/router";
+import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
-import { useOrgBrandingValues } from "@calcom/features/ee/organizations/hooks";
-import { subdomainSuffix } from "@calcom/features/ee/organizations/lib/orgDomains";
+import { useOrgBranding } from "@calcom/features/ee/organizations/context/provider";
 import { useFlagMap } from "@calcom/features/flags/context/provider";
 import { classNames } from "@calcom/lib";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
@@ -80,10 +79,11 @@ export default function CreateEventTypeDialog({
     membershipRole: MembershipRole | null | undefined;
   }[];
 }) {
+  const utils = trpc.useContext();
   const { t } = useLocale();
   const router = useRouter();
   const [firstRender, setFirstRender] = useState(true);
-  const orgBranding = useOrgBrandingValues();
+  const orgBranding = useOrgBranding();
 
   const {
     data: { teamId, eventPage: pageSlug },
@@ -117,8 +117,14 @@ export default function CreateEventTypeDialog({
 
   const createMutation = trpc.viewer.eventTypes.create.useMutation({
     onSuccess: async ({ eventType }) => {
-      await router.replace("/event-types/" + eventType.id);
-      showToast(t("event_type_created_successfully", { eventTypeTitle: eventType.title }), "success");
+      await utils.viewer.eventTypes.getByViewer.invalidate();
+      await router.replace(`/event-types/${eventType.id}`);
+      showToast(
+        t("event_type_created_successfully", {
+          eventTypeTitle: eventType.title,
+        }),
+        "success"
+      );
     },
     onError: (err) => {
       if (err instanceof HttpError) {
@@ -127,21 +133,19 @@ export default function CreateEventTypeDialog({
       }
 
       if (err.data?.code === "BAD_REQUEST") {
-        const message = `${err.data.code}: URL already exists.`;
+        const message = `${err.data.code}: ${t("error_event_type_url_duplicate")}`;
         showToast(message, "error");
       }
 
       if (err.data?.code === "UNAUTHORIZED") {
-        const message = `${err.data.code}: You are not able to create this event`;
+        const message = `${err.data.code}: ${t("error_event_type_unauthorized_create")}`;
         showToast(message, "error");
       }
     },
   });
 
   const flags = useFlagMap();
-  const urlPrefix = orgBranding
-    ? `${orgBranding.slug}.${subdomainSuffix()}`
-    : process.env.NEXT_PUBLIC_WEBSITE_URL;
+  const urlPrefix = orgBranding?.fullDomain ?? process.env.NEXT_PUBLIC_WEBSITE_URL;
 
   return (
     <Dialog
@@ -166,7 +170,7 @@ export default function CreateEventTypeDialog({
           handleSubmit={(values) => {
             createMutation.mutate(values);
           }}>
-          <div className="mt-3 space-y-6 pb-10">
+          <div className="mt-3 space-y-6 pb-11">
             {teamId && (
               <TextField
                 type="hidden"
@@ -237,7 +241,7 @@ export default function CreateEventTypeDialog({
                     required
                     min="10"
                     placeholder="15"
-                    label={t("length")}
+                    label={t("duration")}
                     className="pr-4"
                     {...register("length", { valueAsNumber: true })}
                     addOnSuffix={t("minutes")}

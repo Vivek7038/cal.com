@@ -9,6 +9,7 @@ import { getServerSession } from "@calcom/features/auth/lib/getServerSession";
 import getWebhooks from "@calcom/features/webhooks/lib/getWebhooks";
 import sendPayload from "@calcom/features/webhooks/lib/sendPayload";
 import { IS_SELF_HOSTED } from "@calcom/lib/constants";
+import { getTeamIdFromEventType } from "@calcom/lib/getTeamIdFromEventType";
 import { defaultHandler } from "@calcom/lib/server";
 import { getTranslation } from "@calcom/lib/server/i18n";
 import prisma, { bookingMinimalSelect } from "@calcom/prisma";
@@ -33,13 +34,17 @@ const triggerWebhook = async ({
   booking: {
     userId: number | undefined;
     eventTypeId: number | null;
+    eventTypeParentId: number | null | undefined;
     teamId?: number | null;
   };
 }) => {
   const eventTrigger: WebhookTriggerEvents = "RECORDING_READY";
   // Send Webhook call if hooked to BOOKING.RECORDING_READY
+
+  const triggerForUser = !booking.teamId || (booking.teamId && booking.eventTypeParentId);
+
   const subscriberOptions = {
-    userId: booking.userId,
+    userId: triggerForUser ? booking.userId : null,
     eventTypeId: booking.eventTypeId,
     triggerEvent: eventTrigger,
     teamId: booking.teamId,
@@ -55,6 +60,46 @@ const triggerWebhook = async ({
     })
   );
   await Promise.all(promises);
+};
+
+const checkIfUserIsPartOfTheSameTeam = async (
+  teamId: number | undefined | null,
+  userId: number,
+  userEmail: string | undefined | null
+) => {
+  if (!teamId) return false;
+
+  const getUserQuery = () => {
+    if (!!userEmail) {
+      return {
+        OR: [
+          {
+            id: userId,
+          },
+          {
+            email: userEmail,
+          },
+        ],
+      };
+    } else {
+      return {
+        id: userId,
+      };
+    }
+  };
+
+  const team = await prisma.team.findFirst({
+    where: {
+      id: teamId,
+      members: {
+        some: {
+          user: getUserQuery(),
+        },
+      },
+    },
+  });
+
+  return !!team;
 };
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -92,6 +137,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         eventType: {
           select: {
             teamId: true,
+            parentId: true,
           },
         },
         user: {
@@ -131,12 +177,22 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
     const isUserAttendeeOrOrganiser =
       booking?.user?.id === session.user.id ||
-      attendeesList.find((attendee) => attendee.id === session.user.id);
+      attendeesList.find(
+        (attendee) => attendee.id === session.user.id || attendee.email === session.user.email
+      );
 
     if (!isUserAttendeeOrOrganiser) {
-      return res.status(403).send({
-        message: "Unauthorised",
-      });
+      const isUserMemberOfTheTeam = checkIfUserIsPartOfTheSameTeam(
+        booking?.eventType?.teamId,
+        session.user.id,
+        session.user.email
+      );
+
+      if (!isUserMemberOfTheTeam) {
+        return res.status(403).send({
+          message: "Unauthorised",
+        });
+      }
     }
 
     await prisma.booking.update({
@@ -168,13 +224,21 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       uid: booking.uid,
     };
 
+    const teamId = await getTeamIdFromEventType({
+      eventType: {
+        team: { id: booking?.eventType?.teamId ?? null },
+        parentId: booking?.eventType?.parentId ?? null,
+      },
+    });
+
     await triggerWebhook({
       evt,
       downloadLink,
       booking: {
         userId: booking?.user?.id,
         eventTypeId: booking.eventTypeId,
-        teamId: booking.eventType?.teamId,
+        eventTypeParentId: booking.eventType?.parentId,
+        teamId,
       },
     });
 
@@ -188,7 +252,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
     return res.status(403).json({ message: "User does not have team plan to send out emails" });
   } catch (err) {
-    console.warn("something_went_wrong", err);
+    console.warn("Error in /recorded-daily-video", err);
     return res.status(500).json({ message: "something went wrong" });
   }
 }
