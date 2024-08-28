@@ -1,8 +1,10 @@
 import type { EventType } from "@prisma/client";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import type { PaymentPageProps } from "@calcom/ee/payments/pages/payment";
 import type { BookingResponse } from "@calcom/features/bookings/types";
+import { useCompatSearchParams } from "@calcom/lib/hooks/useCompatSearchParams";
+import { navigateInTopWindow } from "@calcom/lib/navigateInTopWindow";
 
 function getNewSeachParams(args: {
   query: Record<string, string | null | undefined | boolean>;
@@ -41,19 +43,25 @@ export const getBookingRedirectExtraParams = (booking: SuccessRedirectBookingTyp
 
 export const useBookingSuccessRedirect = () => {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const searchParams = useCompatSearchParams();
   const bookingSuccessRedirect = ({
     successRedirectUrl,
     query,
     booking,
+    forwardParamsSuccessRedirect,
   }: {
     successRedirectUrl: EventType["successRedirectUrl"];
+    forwardParamsSuccessRedirect: EventType["forwardParamsSuccessRedirect"];
     query: Record<string, string | null | undefined | boolean>;
     booking: SuccessRedirectBookingType;
   }) => {
     if (successRedirectUrl) {
       const url = new URL(successRedirectUrl);
       // Using parent ensures, Embed iframe would redirect outside of the iframe.
+      if (!forwardParamsSuccessRedirect) {
+        navigateInTopWindow(url.toString());
+        return;
+      }
       const bookingExtraParams = getBookingRedirectExtraParams(booking);
       const newSearchParams = getNewSeachParams({
         query: {
@@ -62,7 +70,12 @@ export const useBookingSuccessRedirect = () => {
         },
         searchParams: searchParams ?? undefined,
       });
-      window.parent.location.href = `${url.toString()}?${newSearchParams.toString()}`;
+
+      newSearchParams.forEach((value, key) => {
+        url.searchParams.append(key, value);
+      });
+
+      navigateInTopWindow(url.toString());
       return;
     }
     const newSearchParams = getNewSeachParams({ query });

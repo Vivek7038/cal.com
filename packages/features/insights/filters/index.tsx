@@ -1,7 +1,6 @@
 import { useFilterContext } from "@calcom/features/insights/context/provider";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
-import { Button, Tooltip } from "@calcom/ui";
-import { X } from "@calcom/ui/components/icon";
+import { Button, Icon, Tooltip } from "@calcom/ui";
 
 import { DateSelect } from "./DateSelect";
 import { Download } from "./Download/index";
@@ -28,7 +27,7 @@ const ClearFilters = () => {
         onClick={() => {
           clearFilters();
         }}>
-        <X className="mr-1 h-4 w-4" />
+        <Icon name="x" className="mr-1 h-4 w-4" />
         {t("clear")}
       </Button>
     </Tooltip>
@@ -37,7 +36,7 @@ const ClearFilters = () => {
 
 export const Filters = () => {
   return (
-    <div className="mb-4 ml-auto mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-between">
+    <div className="ml-auto mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-between">
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-nowrap sm:justify-start">
         <TeamAndSelfList />
 
@@ -58,7 +57,7 @@ export const Filters = () => {
                     color="secondary"
                     target="_blank"
                     rel="noreferrer"
-                    StartIcon={Settings}
+                    StartIcon="settings"
                     className="h-[38px]"
                   />
                 </Tooltip>
@@ -68,7 +67,7 @@ export const Filters = () => {
             color="secondary"
             target="_blank"
             rel="noreferrer"
-            StartIcon={Download}
+            StartIcon="download"
             className="h-[38px]"
           />
         </Tooltip>

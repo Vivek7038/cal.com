@@ -1,9 +1,11 @@
-import type { Webhook } from "@prisma/client";
+import type { Payment, Webhook } from "@prisma/client";
 import { createHmac } from "crypto";
 import { compile } from "handlebars";
 
+import type { TGetTranscriptAccessLink } from "@calcom/app-store/dailyvideo/zod";
 import { getHumanReadableLocationValue } from "@calcom/app-store/locations";
-import type { CalendarEvent } from "@calcom/types/Calendar";
+import { getUTCOffsetByTimezone } from "@calcom/lib/date-fns";
+import type { CalendarEvent, Person } from "@calcom/types/Calendar";
 
 type ContentType = "application/json" | "application/x-www-form-urlencoded";
 
@@ -16,7 +18,35 @@ export type EventTypeInfo = {
   length?: number | null;
 };
 
+export type UTCOffset = {
+  utcOffset?: number | null;
+};
+
+export type WithUTCOffsetType<T> = T & {
+  user?: Person & UTCOffset;
+} & {
+  organizer?: Person & UTCOffset;
+} & {
+  attendees?: (Person & UTCOffset)[];
+};
+
+export type BookingNoShowUpdatedPayload = {
+  message: string;
+  bookingUid: string;
+  bookingId: number;
+  attendees: { email: string; noShow: boolean }[];
+};
+
+export type TranscriptionGeneratedPayload = {
+  downloadLinks?: {
+    transcription: TGetTranscriptAccessLink["transcription"];
+    recording: string;
+  };
+};
+
 export type WebhookDataType = CalendarEvent &
+  TranscriptionGeneratedPayload &
+  // BookingNoShowUpdatedPayload & // This breaks all other webhooks
   EventTypeInfo & {
     metadata?: { [key: string]: string | number | boolean | null };
     bookingId?: number;
@@ -30,16 +60,39 @@ export type WebhookDataType = CalendarEvent &
     createdAt: string;
     downloadLink?: string;
     paymentId?: number;
+    rescheduledBy?: string;
+    cancelledBy?: string;
+    paymentData?: Payment;
   };
 
+function addUTCOffset(
+  data: Omit<WebhookDataType, "createdAt" | "triggerEvent">
+): WithUTCOffsetType<WebhookDataType> {
+  if (data.organizer?.timeZone) {
+    (data.organizer as Person & UTCOffset).utcOffset = getUTCOffsetByTimezone(
+      data.organizer.timeZone,
+      data.startTime
+    );
+  }
+
+  if (data?.attendees?.length) {
+    (data.attendees as (Person & UTCOffset)[]).forEach((attendee) => {
+      attendee.utcOffset = getUTCOffsetByTimezone(attendee.timeZone, data.startTime);
+    });
+  }
+
+  return data as WithUTCOffsetType<WebhookDataType>;
+}
+
 function getZapierPayload(
-  data: CalendarEvent & EventTypeInfo & { status?: string; createdAt: string }
+  data: WithUTCOffsetType<CalendarEvent & EventTypeInfo & { status?: string; createdAt: string }>
 ): string {
-  const attendees = data.attendees.map((attendee) => {
+  const attendees = (data.attendees as (Person & UTCOffset)[]).map((attendee) => {
     return {
       name: attendee.name,
       email: attendee.email,
       timeZone: attendee.timeZone,
+      utcOffset: attendee.utcOffset,
     };
   });
 
@@ -62,6 +115,7 @@ function getZapierPayload(
       name: data.organizer.name,
       email: data.organizer.email,
       timeZone: data.organizer.timeZone,
+      utcOffset: data.organizer.utcOffset,
       locale: data.organizer.locale,
     },
     eventType: {
@@ -87,7 +141,7 @@ function applyTemplate(template: string, data: WebhookDataType, contentType: Con
   return compiled;
 }
 
-function jsonParse(jsonString: string) {
+export function jsonParse(jsonString: string) {
   try {
     return JSON.parse(jsonString);
   } catch (e) {
@@ -109,6 +163,8 @@ const sendPayload = async (
     !template || jsonParse(template) ? "application/json" : "application/x-www-form-urlencoded";
 
   data.description = data.description || data.additionalNotes;
+  data = addUTCOffset(data);
+
   let body;
 
   /* Zapier id is hardcoded in the DB, we send the raw data for this case  */
@@ -153,6 +209,11 @@ export const sendGenericWebhookPayload = async ({
   return _sendPayload(secretKey, webhook, body, "application/json");
 };
 
+export const createWebhookSignature = (params: { secret?: string | null; body: string }) =>
+  params.secret
+    ? createHmac("sha256", params.secret).update(`${params.body}`).digest("hex")
+    : "no-secret-provided";
+
 const _sendPayload = async (
   secretKey: string | null,
   webhook: Pick<Webhook, "subscriberUrl" | "appId" | "payloadTemplate">,
@@ -164,15 +225,11 @@ const _sendPayload = async (
     throw new Error("Missing required elements to send webhook payload.");
   }
 
-  const secretSignature = secretKey
-    ? createHmac("sha256", secretKey).update(`${body}`).digest("hex")
-    : "no-secret-provided";
-
   const response = await fetch(subscriberUrl, {
     method: "POST",
     headers: {
       "Content-Type": contentType,
-      "X-Cal-Signature-256": secretSignature,
+      "X-Cal-Signature-256": createWebhookSignature({ secret: secretKey, body }),
     },
     redirect: "manual",
     body,

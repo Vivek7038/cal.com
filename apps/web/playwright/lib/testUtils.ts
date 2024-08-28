@@ -1,22 +1,20 @@
-import type { Frame, Page } from "@playwright/test";
+import type { Frame, Page, Request as PlaywrightRequest } from "@playwright/test";
 import { expect } from "@playwright/test";
+import { createHash } from "crypto";
 import EventEmitter from "events";
 import type { IncomingMessage, ServerResponse } from "http";
 import { createServer } from "http";
 // eslint-disable-next-line no-restricted-imports
-import { noop } from "lodash";
-import type { API, Messages } from "mailhog";
+import type { Messages } from "mailhog";
+import { totp } from "otplib";
 
 import type { Prisma } from "@calcom/prisma/client";
 import { BookingStatus } from "@calcom/prisma/enums";
+import type { IntervalLimit } from "@calcom/types/Calendar";
 
+import type { createEmailsFixture } from "../fixtures/emails";
 import type { Fixtures } from "./fixtures";
-import { test } from "./fixtures";
-
-export function todo(title: string) {
-  // eslint-disable-next-line playwright/no-skipped-test
-  test.skip(title, noop);
-}
+import { loadJSON } from "./loadJSON";
 
 type Request = IncomingMessage & { body?: unknown };
 type RequestHandlerOptions = { req: Request; res: ServerResponse };
@@ -27,6 +25,14 @@ export const testName = "Test Testson";
 
 export const teamEventTitle = "Team Event - 30min";
 export const teamEventSlug = "team-event-30min";
+
+export const IS_STRIPE_ENABLED = !!(
+  process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY &&
+  process.env.STRIPE_CLIENT_ID &&
+  process.env.STRIPE_PRIVATE_KEY &&
+  process.env.PAYMENT_FEE_FIXED &&
+  process.env.PAYMENT_FEE_PERCENTAGE
+);
 
 export function createHttpServer(opts: { requestHandler?: RequestHandler } = {}) {
   const {
@@ -109,7 +115,7 @@ export async function selectSecondAvailableTimeSlotNextMonth(page: Page) {
   await page.locator('[data-testid="time"]').nth(0).click();
 }
 
-async function bookEventOnThisPage(page: Page) {
+export async function bookEventOnThisPage(page: Page) {
   await selectFirstAvailableTimeSlotNextMonth(page);
   await bookTimeSlot(page);
 
@@ -131,16 +137,20 @@ export async function bookFirstEvent(page: Page) {
   await bookEventOnThisPage(page);
 }
 
-export const bookTimeSlot = async (page: Page, opts?: { name?: string; email?: string }) => {
+export const bookTimeSlot = async (page: Page, opts?: { name?: string; email?: string; title?: string }) => {
   // --- fill form
   await page.fill('[name="name"]', opts?.name ?? testName);
   await page.fill('[name="email"]', opts?.email ?? testEmail);
+  if (opts?.title) {
+    await page.fill('[name="title"]', opts.title);
+  }
   await page.press('[name="email"]', "Enter");
 };
+
 // Provide an standalone localize utility not managed by next-i18n
 export async function localize(locale: string) {
   const localeModule = `../../public/static/locales/${locale}/common.json`;
-  const localeMap = await import(localeModule);
+  const localeMap = loadJSON(localeModule);
   return (message: string) => {
     if (message in localeMap) return localeMap[message];
     throw "No locale found for the given entry message";
@@ -201,15 +211,28 @@ export async function installAppleCalendar(page: Page) {
   await page.click('[data-testid="install-app-button"]');
 }
 
+export async function getInviteLink(page: Page) {
+  const response = await page.waitForResponse("**/api/trpc/teams/createInvite?batch=1");
+  const json = await response.json();
+  return json[0].result.data.json.inviteLink as string;
+}
+
 export async function getEmailsReceivedByUser({
   emails,
   userEmail,
 }: {
-  emails?: API;
+  emails?: ReturnType<typeof createEmailsFixture>;
   userEmail: string;
 }): Promise<Messages | null> {
   if (!emails) return null;
-  return emails.search(userEmail, "to");
+  const matchingEmails = await emails.search(userEmail, "to");
+  if (!matchingEmails?.total) {
+    console.log(
+      `No emails received by ${userEmail}. All emails sent to:`,
+      (await emails.messages())?.items.map((e) => e.to)
+    );
+  }
+  return matchingEmails;
 }
 
 export async function expectEmailsToHaveSubject({
@@ -218,7 +241,7 @@ export async function expectEmailsToHaveSubject({
   booker,
   eventTitle,
 }: {
-  emails?: API;
+  emails?: ReturnType<typeof createEmailsFixture>;
   organizer: { name?: string | null; email: string };
   booker: { name: string; email: string };
   eventTitle: string;
@@ -238,11 +261,44 @@ export async function expectEmailsToHaveSubject({
   expect(bookerFirstEmail.subject).toBe(emailSubject);
 }
 
+export const createUserWithLimits = ({
+  users,
+  slug,
+  title,
+  length,
+  bookingLimits,
+  durationLimits,
+}: {
+  users: Fixtures["users"];
+  slug: string;
+  title?: string;
+  length?: number;
+  bookingLimits?: IntervalLimit;
+  durationLimits?: IntervalLimit;
+}) => {
+  if (!bookingLimits && !durationLimits) {
+    throw new Error("Need to supply at least one of bookingLimits or durationLimits");
+  }
+
+  return users.create({
+    eventTypes: [
+      {
+        slug,
+        title: title ?? slug,
+        length: length ?? 30,
+        bookingLimits,
+        durationLimits,
+      },
+    ],
+  });
+};
+
 // this method is not used anywhere else
 // but I'm keeping it here in case we need in the future
 async function createUserWithSeatedEvent(users: Fixtures["users"]) {
   const slug = "seats";
   const user = await users.create({
+    name: "Seated event user",
     eventTypes: [
       {
         title: "Seated event",
@@ -277,4 +333,93 @@ export async function createUserWithSeatedEventAndAttendees(
     },
   });
   return { user, eventType, booking };
+}
+
+export function generateTotpCode(email: string) {
+  const secret = createHash("md5")
+    .update(email + process.env.CALENDSO_ENCRYPTION_KEY)
+    .digest("hex");
+
+  totp.options = { step: 90 };
+  return totp.generate(secret);
+}
+
+export async function fillStripeTestCheckout(page: Page) {
+  await page.fill("[name=cardNumber]", "4242424242424242");
+  await page.fill("[name=cardExpiry]", "12/30");
+  await page.fill("[name=cardCvc]", "111");
+  await page.fill("[name=billingName]", "Stripe Stripeson");
+  await page.selectOption("[name=billingCountry]", "US");
+  await page.fill("[name=billingPostalCode]", "12345");
+  await page.click(".SubmitButton--complete-Shimmer");
+}
+
+export function goToUrlWithErrorHandling({ page, url }: { page: Page; url: string }) {
+  return new Promise<{ success: boolean; url: string }>(async (resolve) => {
+    const onRequestFailed = (request: PlaywrightRequest) => {
+      const failedToLoadUrl = request.url();
+      console.log("goToUrlWithErrorHandling: Failed to load URL:", failedToLoadUrl);
+      resolve({ success: false, url: failedToLoadUrl });
+    };
+    page.on("requestfailed", onRequestFailed);
+    try {
+      await page.goto(url);
+    } catch (e) {}
+    page.off("requestfailed", onRequestFailed);
+    resolve({ success: true, url: page.url() });
+  });
+}
+
+/**
+ * Within this function's callback if a non-org domain is opened, it is considered an org domain identfied from `orgSlug`
+ */
+export async function doOnOrgDomain(
+  { orgSlug, page }: { orgSlug: string | null; page: Page },
+  callback: ({
+    page,
+  }: {
+    page: Page;
+    goToUrlWithErrorHandling: (url: string) => ReturnType<typeof goToUrlWithErrorHandling>;
+  }) => Promise<any>
+) {
+  if (!orgSlug) {
+    throw new Error("orgSlug is not available");
+  }
+
+  page.setExtraHTTPHeaders({
+    "x-cal-force-slug": orgSlug,
+  });
+  const callbackResult = await callback({
+    page,
+    goToUrlWithErrorHandling: (url: string) => {
+      return goToUrlWithErrorHandling({ page, url });
+    },
+  });
+  await page.setExtraHTTPHeaders({
+    "x-cal-force-slug": "",
+  });
+  return callbackResult;
+}
+
+// When App directory is there, this is the 404 page text. We should work on fixing the 404 page as it changed due to app directory.
+export const NotFoundPageTextAppDir = "This page does not exist.";
+// export const NotFoundPageText = "ERROR 404";
+
+export async function gotoFirstEventType(page: Page) {
+  const $eventTypes = page.locator("[data-testid=event-types] > li a");
+  const firstEventTypeElement = $eventTypes.first();
+  await firstEventTypeElement.click();
+  await page.waitForURL((url) => {
+    return !!url.pathname.match(/\/event-types\/.+/);
+  });
+}
+
+export async function gotoBookingPage(page: Page) {
+  const previewLink = await page.locator("[data-testid=preview-button]").getAttribute("href");
+
+  await page.goto(previewLink ?? "");
+}
+
+export async function saveEventType(page: Page) {
+  await page.locator("[data-testid=update-eventtype]").click();
 }

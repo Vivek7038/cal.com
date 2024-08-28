@@ -1,4 +1,5 @@
 import { TooltipProvider } from "@radix-ui/react-tooltip";
+import { TrpcProvider } from "app/_trpc/trpc-provider";
 import { dir } from "i18next";
 import type { Session } from "next-auth";
 import { SessionProvider, useSession } from "next-auth/react";
@@ -9,6 +10,7 @@ import type { AppProps as NextAppProps } from "next/app";
 import type { ReadonlyURLSearchParams } from "next/navigation";
 import { useSearchParams } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
+import CacheProvider from "react-inlinesvg/provider";
 
 import { OrgBrandingProvider } from "@calcom/features/ee/organizations/context/provider";
 import DynamicHelpscoutProvider from "@calcom/features/ee/support/lib/helpscout/providerDynamic";
@@ -61,8 +63,12 @@ const CustomI18nextProvider = (props: { children: React.ReactElement; i18n?: SSR
   // @TODO
 
   const session = useSession();
+
+  // window.document.documentElement.lang can be empty in some cases, for instance when we rendering GlobalError (not-found) page.
   const locale =
-    session?.data?.user.locale ?? typeof window !== "undefined" ? window.document.documentElement.lang : "en";
+    session?.data?.user.locale ?? typeof window !== "undefined"
+      ? window.document.documentElement.lang || "en"
+      : "en";
 
   useEffect(() => {
     try {
@@ -96,13 +102,9 @@ const CustomI18nextProvider = (props: { children: React.ReactElement; i18n?: SSR
   const clientViewerI18n = useViewerI18n(locale);
   const i18n = clientViewerI18n.data?.i18n ?? props.i18n;
 
-  if (!i18n || !i18n._nextI18Next) {
-    return null;
-  }
-
   return (
     // @ts-expect-error AppWithTranslationHoc expects AppProps
-    <AppWithTranslationHoc pageProps={{ _nextI18Next: i18n._nextI18Next }}>
+    <AppWithTranslationHoc pageProps={{ _nextI18Next: i18n?._nextI18Next }}>
       {props.children}
     </AppWithTranslationHoc>
   );
@@ -112,7 +114,7 @@ const enum ThemeSupport {
   // e.g. Login Page
   None = "none",
   // Entire App except Booking Pages
-  App = "systemOnly",
+  App = "userConfigured",
   // Booking Pages(including Routing Forms)
   Booking = "userConfigured",
 }
@@ -194,7 +196,11 @@ function getThemeProviderProps(props: {
 
   const isBookingPageThemeSupportRequired = themeSupport === ThemeSupport.Booking;
 
-  if ((isBookingPageThemeSupportRequired || props.isEmbedMode) && !props.themeBasis) {
+  if (
+    !process.env.NEXT_PUBLIC_IS_E2E &&
+    (isBookingPageThemeSupportRequired || props.isEmbedMode) &&
+    !props.themeBasis
+  ) {
     console.warn(
       "`themeBasis` is required for booking page theme support. Not providing it will cause theme flicker."
     );
@@ -255,26 +261,31 @@ const AppProviders = (props: PageWrapperProps) => {
   const isBookingPage = useIsBookingPage();
 
   const RemainingProviders = (
-    <EventCollectionProvider options={{ apiPath: "/api/collect-events" }}>
-      <SessionProvider>
-        <CustomI18nextProvider i18n={props.i18n}>
-          <TooltipProvider>
-            {/* color-scheme makes background:transparent not work which is required by embed. We need to ensure next-theme adds color-scheme to `body` instead of `html`(https://github.com/pacocoursey/next-themes/blob/main/src/index.tsx#L74). Once that's done we can enable color-scheme support */}
-            <CalcomThemeProvider
-              themeBasis={props.themeBasis}
-              nonce={props.nonce}
-              isThemeSupported={props.isThemeSupported}
-              isBookingPage={props.isBookingPage || isBookingPage}>
-              <FeatureFlagsProvider>
-                <OrgBrandProvider>
-                  <MetaProvider>{props.children}</MetaProvider>
-                </OrgBrandProvider>
-              </FeatureFlagsProvider>
-            </CalcomThemeProvider>
-          </TooltipProvider>
-        </CustomI18nextProvider>
-      </SessionProvider>
-    </EventCollectionProvider>
+    <TrpcProvider dehydratedState={props.dehydratedState}>
+      <EventCollectionProvider options={{ apiPath: "/api/collect-events" }}>
+        <SessionProvider>
+          <CustomI18nextProvider i18n={props.i18n}>
+            <TooltipProvider>
+              {/* color-scheme makes background:transparent not work which is required by embed. We need to ensure next-theme adds color-scheme to `body` instead of `html`(https://github.com/pacocoursey/next-themes/blob/main/src/index.tsx#L74). Once that's done we can enable color-scheme support */}
+              <CalcomThemeProvider
+                themeBasis={props.themeBasis}
+                nonce={props.nonce}
+                isThemeSupported={/* undefined gets treated as true */ props.isThemeSupported ?? true}
+                isBookingPage={props.isBookingPage || isBookingPage}>
+                <FeatureFlagsProvider>
+                  <OrgBrandProvider>
+                    {/* @ts-expect-error FIXME remove this comment when upgrading typescript to v5 */}
+                    <CacheProvider>
+                      <MetaProvider>{props.children}</MetaProvider>
+                    </CacheProvider>
+                  </OrgBrandProvider>
+                </FeatureFlagsProvider>
+              </CalcomThemeProvider>
+            </TooltipProvider>
+          </CustomI18nextProvider>
+        </SessionProvider>
+      </EventCollectionProvider>
+    </TrpcProvider>
   );
 
   if (isBookingPage) {

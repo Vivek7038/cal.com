@@ -29,7 +29,7 @@ const handlePayment = async (
 ) => {
   const paymentApp = (await appStore[
     paymentAppCredentials?.app?.dirName as keyof typeof appStore
-  ]()) as PaymentApp;
+  ]?.()) as PaymentApp;
   if (!paymentApp?.lib?.PaymentService) {
     console.warn(`payment App service of type ${paymentApp} is not implemented`);
     return null;
@@ -75,7 +75,7 @@ const handlePayment = async (
     throw new Error("Payment data is null");
   }
   try {
-    await paymentInstance.afterPayment(evt, booking, paymentData);
+    await paymentInstance.afterPayment(evt, booking, paymentData, selectedEventType?.metadata);
   } catch (e) {
     console.error(e);
   }

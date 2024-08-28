@@ -7,6 +7,7 @@ import { getTranslation } from "@calcom/lib/server";
 import { getUsersCredentials } from "@calcom/lib/server/getUsersCredentials";
 import { prisma } from "@calcom/prisma";
 import { credentialForCalendarServiceSelect } from "@calcom/prisma/selects/credential";
+import type { EventTypeMetadata } from "@calcom/prisma/zod-utils";
 import type { AdditionalInformation, CalendarEvent } from "@calcom/types/Calendar";
 import type { CredentialPayload } from "@calcom/types/Credential";
 
@@ -74,7 +75,7 @@ export const editLocationHandler = async ({ ctx, input }: EditLocationOptions) =
       startTime: booking.startTime ? dayjs(booking.startTime).format() : "",
       endTime: booking.endTime ? dayjs(booking.endTime).format() : "",
       organizer: {
-        email: organizer.email,
+        email: booking?.userPrimaryEmail ?? organizer.email,
         name: organizer.name ?? "Nameless",
         timeZone: organizer.timeZone,
         language: { translate: tOrganizer, locale: organizer.locale ?? "en" },
@@ -93,7 +94,7 @@ export const editLocationHandler = async ({ ctx, input }: EditLocationOptions) =
       seatsShowAttendees: booking.eventType?.seatsShowAttendees,
     };
 
-    const credentials = await getUsersCredentials(ctx.user.id);
+    const credentials = await getUsersCredentials(ctx.user);
 
     const eventManager = new EventManager({
       ...ctx.user,
@@ -131,7 +132,10 @@ export const editLocationHandler = async ({ ctx, input }: EditLocationOptions) =
         metadata.entryPoints = results[0].updatedEvent?.entryPoints;
       }
       try {
-        await sendLocationChangeEmails({ ...evt, additionalInformation: metadata });
+        await sendLocationChangeEmails(
+          { ...evt, additionalInformation: metadata },
+          booking?.eventType?.metadata as EventTypeMetadata
+        );
       } catch (error) {
         console.log("Error sending LocationChangeEmails");
       }

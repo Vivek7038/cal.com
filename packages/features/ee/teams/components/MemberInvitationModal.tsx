@@ -1,37 +1,37 @@
-import { BuildingIcon, PaperclipIcon, UserIcon, Users } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { Trans } from "next-i18next";
-import { useMemo, useState, useRef } from "react";
 import type { FormEvent } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 
 import TeamInviteFromOrg from "@calcom/ee/organizations/components/TeamInviteFromOrg";
 import { classNames } from "@calcom/lib";
-import { IS_TEAM_BILLING_ENABLED, WEBAPP_URL } from "@calcom/lib/constants";
+import { IS_TEAM_BILLING_ENABLED, MAX_NB_INVITES } from "@calcom/lib/constants";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { MembershipRole } from "@calcom/prisma/enums";
 import type { RouterOutputs } from "@calcom/trpc";
 import { trpc } from "@calcom/trpc";
+import { isEmail } from "@calcom/trpc/server/routers/viewer/teams/util";
 import {
   Button,
   Dialog,
   DialogContent,
   DialogFooter,
   Form,
+  Icon,
   Label,
+  Select,
   showToast,
+  TextAreaField,
   TextField,
   ToggleGroup,
-  Select,
-  TextAreaField,
 } from "@calcom/ui";
-import { Link } from "@calcom/ui/components/icon";
 
 import type { PendingMember } from "../lib/types";
 import { GoogleWorkspaceInviteButton } from "./GoogleWorkspaceInviteButton";
 
 type MemberInvitationModalProps = {
   isOpen: boolean;
-  justEmailInvites?: boolean;
   onExit: () => void;
   orgMembers?: RouterOutputs["viewer"]["organizations"]["getMembers"];
   onSubmit: (values: NewMemberForm, resetFields: () => void) => void;
@@ -39,7 +39,7 @@ type MemberInvitationModalProps = {
   teamId: number;
   members?: PendingMember[];
   token?: string;
-  isLoading?: boolean;
+  isPending?: boolean;
   disableCopyLink?: boolean;
   isOrg?: boolean;
 };
@@ -68,15 +68,30 @@ function toggleElementInArray(value: string[] | string | undefined, element: str
 export default function MemberInvitationModal(props: MemberInvitationModalProps) {
   const { t } = useLocale();
   const { disableCopyLink = false, isOrg = false } = props;
-  const trpcContext = trpc.useContext();
+  const trpcContext = trpc.useUtils();
+  const session = useSession();
+  const { data: currentOrg } = trpc.viewer.organizations.listCurrent.useQuery(undefined, {
+    enabled: !!session.data?.user?.org,
+  });
+
+  // Check current org role and not team role
+  const isOrgAdminOrOwner =
+    currentOrg &&
+    (currentOrg.user.role === MembershipRole.OWNER || currentOrg.user.role === MembershipRole.ADMIN);
+
+  const canSeeOrganization = !!(
+    props?.orgMembers &&
+    props.orgMembers?.length > 0 &&
+    currentOrg?.isPrivate &&
+    isOrgAdminOrOwner
+  );
 
   const [modalImportMode, setModalInputMode] = useState<ModalMode>(
-    props?.orgMembers && props.orgMembers?.length > 0 ? "ORGANIZATION" : "INDIVIDUAL"
+    canSeeOrganization ? "ORGANIZATION" : "INDIVIDUAL"
   );
 
   const createInviteMutation = trpc.viewer.teams.createInvite.useMutation({
-    onSuccess(token) {
-      copyInviteLinkToClipboard(token);
+    async onSuccess({ inviteLink }) {
       trpcContext.viewer.teams.get.invalidate();
       trpcContext.viewer.teams.list.invalidate();
     },
@@ -85,43 +100,39 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
     },
   });
 
-  const copyInviteLinkToClipboard = async (token: string) => {
-    const isOrgInvite = isOrg;
-    const teamInviteLink = `${WEBAPP_URL}/teams?token=${token}`;
-    const orgInviteLink = `${WEBAPP_URL}/signup?token=${token}&callbackUrl=/getting-started`;
-
-    const inviteLink =
-      isOrgInvite || (props?.orgMembers && props.orgMembers?.length > 0) ? orgInviteLink : teamInviteLink;
-    await navigator.clipboard.writeText(inviteLink);
-    showToast(t("invite_link_copied"), "success");
-  };
-
   const options: MembershipRoleOption[] = useMemo(() => {
-    return [
+    const options: MembershipRoleOption[] = [
       { value: MembershipRole.MEMBER, label: t("member") },
       { value: MembershipRole.ADMIN, label: t("admin") },
       { value: MembershipRole.OWNER, label: t("owner") },
     ];
-  }, [t]);
+
+    // Adjust options for organizations where the user isn't the owner
+    if (isOrg && !isOrgAdminOrOwner) {
+      return options.filter((option) => option.value !== MembershipRole.OWNER);
+    }
+
+    return options;
+  }, [t, isOrgAdminOrOwner, isOrg]);
 
   const toggleGroupOptions = useMemo(() => {
     const array = [
       {
         value: "INDIVIDUAL",
         label: t("invite_team_individual_segment"),
-        iconLeft: <UserIcon />,
+        iconLeft: <Icon name="user" />,
       },
-      { value: "BULK", label: t("invite_team_bulk_segment"), iconLeft: <Users /> },
+      { value: "BULK", label: t("invite_team_bulk_segment"), iconLeft: <Icon name="users" /> },
     ];
-    if (props?.orgMembers && props.orgMembers?.length > 0) {
+    if (canSeeOrganization) {
       array.unshift({
         value: "ORGANIZATION",
         label: t("organization"),
-        iconLeft: <BuildingIcon />,
+        iconLeft: <Icon name="building" />,
       });
     }
     return array;
-  }, [t, props.orgMembers]);
+  }, [t, canSeeOrganization]);
 
   const newMemberFormMethods = useForm<NewMemberForm>();
 
@@ -168,6 +179,7 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
   const resetFields = () => {
     newMemberFormMethods.reset();
     newMemberFormMethods.setValue("emailOrUsername", "");
+    newMemberFormMethods.setValue("role", options[0].value);
     setModalInputMode("INDIVIDUAL");
   };
 
@@ -201,7 +213,10 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
           </Label>
           <ToggleGroup
             isFullWidth={true}
-            onValueChange={(val) => setModalInputMode(val as ModalMode)}
+            onValueChange={(val) => {
+              setModalInputMode(val as ModalMode);
+              newMemberFormMethods.clearErrors();
+            }}
             defaultValue={modalImportMode}
             options={toggleGroupOptions}
           />
@@ -215,8 +230,10 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                 name="emailOrUsername"
                 control={newMemberFormMethods.control}
                 rules={{
-                  required: t("enter_email_or_username"),
+                  required: t("enter_email"),
                   validate: (value) => {
+                    // orgs can only invite members by email
+                    if (typeof value === "string" && !isEmail(value)) return t("enter_email");
                     if (typeof value === "string")
                       return validateUniqueInvite(value) || t("member_already_invited");
                   },
@@ -224,7 +241,7 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                 render={({ field: { onChange }, fieldState: { error } }) => (
                   <>
                     <TextField
-                      label={props.justEmailInvites ? t("email") : t("email_or_username")}
+                      label={t("email")}
                       id="inviteUser"
                       name="inviteUser"
                       placeholder="email@example.com"
@@ -243,7 +260,14 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                   name="emailOrUsername"
                   control={newMemberFormMethods.control}
                   rules={{
-                    required: t("enter_email_or_username"),
+                    required: t("enter_email"),
+                    validate: (value) => {
+                      if (Array.isArray(value) && value.some((email) => !isEmail(email)))
+                        return t("enter_emails");
+                      if (Array.isArray(value) && value.length > MAX_NB_INVITES)
+                        return t("too_many_invites", { nbUsers: MAX_NB_INVITES });
+                      if (typeof value === "string" && !isEmail(value)) return t("enter_email");
+                    },
                   }}
                   render={({ field: { onChange, value }, fieldState: { error } }) => (
                     <>
@@ -257,7 +281,7 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                         required
                         value={value}
                         onChange={(e) => {
-                          const targetValues = e.target.value.split(",");
+                          const targetValues = e.target.value.split(/[\n,]/);
                           const emails =
                             targetValues.length === 1
                               ? targetValues[0].trim().toLocaleLowerCase()
@@ -284,7 +308,7 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                       importRef.current.click();
                     }
                   }}
-                  StartIcon={PaperclipIcon}
+                  StartIcon="paperclip"
                   className="mt-3 justify-center stroke-2">
                   {t("upload_csv_file")}
                 </Button>
@@ -365,14 +389,40 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
                   type="button"
                   color="minimal"
                   variant="icon"
-                  onClick={() =>
-                    props.token
-                      ? copyInviteLinkToClipboard(props.token)
-                      : createInviteMutation.mutate({ teamId: props.teamId })
-                  }
+                  onClick={async function () {
+                    try {
+                      // Required for Safari but also works on Chrome
+                      // Credits to https://wolfgangrittner.dev/how-to-use-clipboard-api-in-firefox/
+                      if (typeof ClipboardItem !== "undefined") {
+                        const inviteLinkClipbardItem = new ClipboardItem({
+                          "text/plain": new Promise(async (resolve) => {
+                            // Instead of doing async work and then writing to clipboard, do async work in clipboard API itself
+                            const { inviteLink } = await createInviteMutation.mutateAsync({
+                              teamId: props.teamId,
+                              token: props.token,
+                            });
+                            showToast(t("invite_link_copied"), "success");
+                            resolve(new Blob([inviteLink], { type: "text/plain" }));
+                          }),
+                        });
+                        await navigator.clipboard.write([inviteLinkClipbardItem]);
+                      } else {
+                        // Fallback for browsers that don't support ClipboardItem e.g. Firefox
+                        const { inviteLink } = await createInviteMutation.mutateAsync({
+                          teamId: props.teamId,
+                          token: props.token,
+                        });
+                        await navigator.clipboard.writeText(inviteLink);
+                        showToast(t("invite_link_copied"), "success");
+                      }
+                    } catch (e) {
+                      showToast(t("something_went_wrong_on_our_end"), "error");
+                      console.error(e);
+                    }
+                  }}
                   className={classNames("gap-2", props.token && "opacity-50")}
                   data-testid="copy-invite-link-button">
-                  <Link className="text-default h-4 w-4" aria-hidden="true" />
+                  <Icon name="link" className="text-default h-4 w-4" aria-hidden="true" />
                   <span className="hidden sm:inline">{t("copy_invite_link")}</span>
                 </Button>
               </div>
@@ -387,7 +437,7 @@ export default function MemberInvitationModal(props: MemberInvitationModalProps)
               {t("cancel")}
             </Button>
             <Button
-              loading={props.isLoading || createInviteMutation.isLoading}
+              loading={props.isPending || createInviteMutation.isPending}
               type="submit"
               color="primary"
               className="me-2 ms-2"

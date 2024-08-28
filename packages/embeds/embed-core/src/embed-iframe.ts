@@ -1,10 +1,12 @@
+"use client";
+
 import { useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useCallback } from "react";
 
 import type { Message } from "./embed";
 import { sdkActionManager } from "./sdk-event";
 import type { EmbedThemeConfig, UiConfig, EmbedNonStylesConfig, BookerLayouts, EmbedStyles } from "./types";
+import { useCompatSearchParams } from "./useCompatSearchParams";
 
 type SetStyles = React.Dispatch<React.SetStateAction<EmbedStyles>>;
 type setNonStylesConfig = React.Dispatch<React.SetStateAction<EmbedNonStylesConfig>>;
@@ -23,6 +25,7 @@ export type PrefillAndIframeAttrsConfig = Record<string, string | string[] | Rec
 
   // TODO: It should have a dedicated prefill prop
   // prefill: {},
+  "flag.coep"?: "true" | "false";
 
   // TODO: Move layout and theme as nested props of ui as it makes it clear that these two can be configured using `ui` instruction as well any time.
   // ui: {layout; theme}
@@ -208,7 +211,7 @@ const useUrlChange = (callback: (newUrl: string) => void) => {
 };
 
 export const useEmbedTheme = () => {
-  const searchParams = useSearchParams();
+  const searchParams = useCompatSearchParams();
   const [theme, setTheme] = useState(
     embedStore.theme || (searchParams?.get("theme") as typeof embedStore.theme)
   );
@@ -508,7 +511,10 @@ function keepParentInformedAboutDimensionChanges() {
   });
 }
 
-if (isBrowser) {
+function main() {
+  if (!isBrowser) {
+    return;
+  }
   log("Embed SDK loaded", { isEmbed: window?.isEmbed?.() || false });
   const url = new URL(document.URL);
   embedStore.theme = window?.getEmbedTheme?.();
@@ -523,6 +529,9 @@ if (isBrowser) {
   // If embed link is opened in top, and not in iframe. Let the page be visible.
   if (top === window) {
     unhideBody();
+    // We would want to avoid a situation where Cal.com embeds cal.com and then embed-iframe is in the top as well. In such case, we would want to avoid infinite loop of events being passed.
+    log("Embed SDK Skipped as we are in top");
+    return;
   }
 
   window.addEventListener("message", (e) => {
@@ -618,3 +627,5 @@ function connectPreloadedEmbed({ url }: { url: URL }) {
 const isPrerendering = () => {
   return new URL(document.URL).searchParams.get("prerender") === "true";
 };
+
+main();

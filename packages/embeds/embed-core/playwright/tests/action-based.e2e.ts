@@ -1,18 +1,20 @@
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 
-import { test } from "@calcom/web/playwright/lib/fixtures";
+import { test, todo } from "@calcom/web/playwright/lib/fixtures";
 import type { Fixtures } from "@calcom/web/playwright/lib/fixtures";
 import { selectFirstAvailableTimeSlotNextMonth } from "@calcom/web/playwright/lib/testUtils";
 
 import {
-  todo,
   getEmbedIframe,
   bookFirstEvent,
   getBooking,
   deleteAllBookingsByEmail,
   rescheduleEvent,
 } from "../lib/testUtils";
+
+// in parallel mode sometimes handleNewBooking endpoint throws "No available users found" error, this never happens in serial mode.
+test.describe.configure({ mode: "serial" });
 
 async function bookFirstFreeUserEventThroughEmbed({
   addEmbedListeners,
@@ -261,6 +263,21 @@ test.describe("Popup Tests", () => {
 
     await expect(embedIframe).toBeEmbedCalLink(calNamespace, embeds.getActionFiredDetails, {
       pathname: calLink,
+    });
+  });
+
+  test("should open on clicking child element", async ({ page, embeds }) => {
+    await deleteAllBookingsByEmail("embed-user@example.com");
+    const calNamespace = "childElementTarget";
+    const configuredLink = "/free/30min";
+    await embeds.gotoPlayground({ calNamespace, url: "/" });
+
+    await page.click(`[data-cal-namespace="${calNamespace}"] b`);
+
+    const embedIframe = await getEmbedIframe({ calNamespace, page, pathname: configuredLink });
+
+    await expect(embedIframe).toBeEmbedCalLink(calNamespace, embeds.getActionFiredDetails, {
+      pathname: configuredLink,
     });
   });
 });
